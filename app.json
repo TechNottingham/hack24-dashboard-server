@@ -1,0 +1,34 @@
+{
+  "name": "hack24-dashboard-server",
+  "description": "Stream aggregator for the Hack24 Dashboard",
+  "repository": "https://github.com/TechNottingham/hack24-dashboard-server",
+  "keywords": [
+    "node",
+    "api",
+    "hackbot",
+    "dashboard"
+  ],
+  "env": {
+    "TWITTER_CONSUMER_KEY": {
+      "description": "Twitter App Consumer Key",
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    "TWITTER_CONSUMER_SECRET": {
+      "description": "Twitter App Consumer Secret",
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    "TWITTER_ACCESS_TOKEN": {
+      "description": "Your Access Token for the Twitter App",
+      "value": "12345678-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    "TWITTER_ACCESS_TOKEN_SECRET": {
+      "description": "Your Access Token Secret for the Twitter App",
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/nodejs"
+    }
+  ]
+}

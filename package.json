@@ -1,0 +1,23 @@
+{
+  "name": "hack24-dashboard-stream",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "lint": "standard",
+    "start": "node .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^5.0.1",
+    "pino": "^4.13.0",
+    "twitter": "^1.7.1",
+    "ws": "^5.0.0"
+  },
+  "devDependencies": {
+    "standard": "^11.0.0"
+  }
+}
