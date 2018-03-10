@@ -1,16 +1,57 @@
 require('dotenv').config()
 
-const WebSocket = require('ws')
+const http = require('http')
+const fs = require('fs')
+const Primus = require('primus')
 const Twitter = require('twitter')
 const pino = require('pino')()
 const moment = require('moment')
+const uglifyjs = require('uglify-js')
 
-const WebSocketServer = WebSocket.Server
+const EventBuffer = require('./event-buffer')
 
-const wss = new WebSocketServer({
-  port: process.env.PORT || 1235,
-  host: process.env.HOST
+const buffer = new EventBuffer()
+
+function setTimeoutAsPromised (timeout) {
+  return new Promise((resolve) => setTimeout(function () {
+    resolve()
+  }, timeout))
+}
+
+const primusLibraryFilename = `${__dirname}/primus.min.js`
+
+const server = http.createServer(function (req, res) {
+  if (req.url === '/js/primus.min.js') {
+    res.setHeader('Content-Type', 'application/javascript')
+    fs.createReadStream(primusLibraryFilename).pipe(res)
+    return
+  }
+
+  res.setHeader('Content-Type', 'text/html')
+  res.write("I'm here!")
+  res.statusCode = 200
+  res.end()
 })
+
+const primus = new Primus(server, { pathname: '/events' })
+primus.on('connection', function (spark) {
+  pino.info('New Primus connection received')
+  buffer.replay((packet) => spark.write(packet))
+})
+
+buffer.on('event', (packet) => primus.write(packet))
+
+function preparePrimusClientLibrary () {
+  return new Promise((resolve, reject) => {
+    const source = primus.library()
+    const minified = uglifyjs.minify(source)
+
+    fs.writeFile(primusLibraryFilename, minified.code, (err) => {
+      if (err) return reject(err)
+      resolve()
+    })
+  })
+}
 
 const twitter = new Twitter({
   consumer_key: process.env.TWITTER_CONSUMER_KEY,
@@ -19,46 +60,42 @@ const twitter = new Twitter({
   access_token_secret: process.env.TWITTER_ACCESS_TOKEN_SECRET
 })
 
-function closeWebsocketServer () {
-  pino.info('Closing Websocket server...')
-  wss.close(function () {
-    process.exit(0)
-  })
-}
-process.on('SIGTERM', closeWebsocketServer)
-process.on('SIGINT', closeWebsocketServer)
-
-function startWebSocketServer (logger, port, host) {
+function startWebServer (port, host) {
   return new Promise((resolve, reject) => {
-    wss.on('listening', function () {
+    server.listen(port, host, function () {
       resolve()
     })
   })
 }
 
-function connectTwitterStream () {
-  return new Promise((resolve, reject) => {
-    const stream = twitter.stream('statuses/filter', { track: '#hack24' })
-    stream.on('response', function () {
-      resolve(stream)
+async function connectTwitterStream () {
+  function connect () {
+    return new Promise((resolve, reject) => {
+      function connectionError (err) {
+        reject(err)
+      }
+
+      const stream = twitter.stream('statuses/filter', { track: '#hack24' })
+      stream.on('response', function (response) {
+        stream.removeListener('error', connectionError)
+        resolve(stream)
+      })
+      stream.once('error', connectionError)
     })
-  })
-}
-
-function broadcastEvent (wss, event, data) {
-  const packet = JSON.stringify({ event, data })
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(packet)
-    }
-  })
-}
-
-function sendEvent (ws, event, data) {
-  const packet = JSON.stringify({ event, data })
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(packet)
   }
+
+  let stream
+
+  while (true) {
+    try {
+      stream = await connect()
+      break
+    } catch (err) {
+      pino.error({ message: err.message }, 'Connection to Twitter stream failed, retrying in 5 sec...')
+      await setTimeoutAsPromised(5000)
+    }
+  }
+  return stream
 }
 
 function convertTweetCreatedAtToTimestamp (createdAt) {
@@ -66,8 +103,11 @@ function convertTweetCreatedAtToTimestamp (createdAt) {
 }
 
 async function init () {
+  pino.info('Creating primus client library...')
+  await preparePrimusClientLibrary()
+
   pino.info('Creating Websocket server...')
-  await startWebSocketServer()
+  await startWebServer(process.env.PORT || 1235, process.env.HOST)
 
   pino.info('Connecting to Twitter...')
   const stream = await connectTwitterStream()
@@ -76,43 +116,39 @@ async function init () {
   return stream
 }
 
-function backfillTweets (ws) {
-  twitter.get('search/tweets', {
-    q: '#hack24',
-    result_type: 'recent',
-    count: 5
-  }, (err, tweets, response) => {
-    if (err) {
-      pino.error(err, 'Unable to fetch recent tweets')
-      return
-    }
+function backfillTweets () {
+  return new Promise((resolve, reject) => {
+    twitter.get('search/tweets', {
+      q: '#hack24',
+      result_type: 'recent',
+      count: 20
+    }, (err, tweets, response) => {
+      if (err) {
+        pino.error(err, 'Unable to fetch recent tweets')
+        return reject(err)
+      }
 
-    tweets.statuses.forEach((event) => {
-      sendEvent(ws, 'tweet', {
-        ts: convertTweetCreatedAtToTimestamp(event.created_at),
-        text: event.text,
-        user: {
-          screen_name: event.user.screen_name,
-          name: event.user.name,
-          profile_image_url: event.user.profile_image_url
-        }
+      tweets.statuses.forEach((event) => {
+        buffer.push('tweet', {
+          ts: convertTweetCreatedAtToTimestamp(event.created_at),
+          text: event.text,
+          user: {
+            screen_name: event.user.screen_name,
+            name: event.user.name,
+            profile_image_url: event.user.profile_image_url
+          }
+        })
       })
+
+      resolve()
     })
   })
 }
 
-function backfillNewClients () {
-  wss.on('connection', (ws) => {
-    backfillTweets(ws)
-  })
-}
-
 function bindTwitterStream (stream) {
-  const broadcast = (event, data) => broadcastEvent(wss, event, data)
-
   stream.on('data', function (event) {
-    broadcast('tweet', {
-      ts: event.timestamp_ms,
+    buffer.push('tweet', {
+      ts: Number(event.timestamp_ms),
       text: event.text,
       user: {
         screen_name: event.user.screen_name,
@@ -127,12 +163,39 @@ function bindTwitterStream (stream) {
   })
 }
 
+function closeWebServer (server) {
+  return new Promise((resolve) => {
+    pino.info('Closing Web server...')
+    server.close(function () {
+      resolve()
+    })
+  })
+}
+
+function closeTwitterStream (stream) {
+  return new Promise((resolve) => {
+    pino.info('Closing Twitter stream...')
+    stream.once('end', function () {
+      resolve()
+    })
+  })
+}
+
 init().catch((err) => {
   pino.error(err, 'Initialisation failed')
   process.exit(1)
-}).then((stream) => {
+}).then(async (stream) => {
+  async function close () {
+    await closeWebServer(server)
+    await closeTwitterStream(stream)
+    process.exit(0)
+  }
+
+  process.on('SIGTERM', close)
+  process.on('SIGINT', close)
+
+  await backfillTweets()
   bindTwitterStream(stream)
-  backfillNewClients()
 })
 
 process.on('unhandledRejection', (reason, p) => {

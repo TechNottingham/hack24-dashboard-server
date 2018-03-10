@@ -1,3 +1,5 @@
 .env
 npm-debug.log
+/.vscode/
 /node_modules/
+/primus.min.js

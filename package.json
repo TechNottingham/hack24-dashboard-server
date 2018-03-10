@@ -15,7 +15,9 @@
     "dotenv": "^5.0.1",
     "moment": "^2.21.0",
     "pino": "^4.13.0",
+    "primus": "^7.1.1",
     "twitter": "^1.7.1",
+    "uglify-js": "^3.3.13",
     "ws": "^5.0.0"
   },
   "devDependencies": {
