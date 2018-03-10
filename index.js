@@ -3,6 +3,7 @@ require('dotenv').config()
 const WebSocket = require('ws')
 const Twitter = require('twitter')
 const pino = require('pino')()
+const moment = require('moment')
 
 const WebSocketServer = WebSocket.Server
 
@@ -60,6 +61,10 @@ function sendEvent (ws, event, data) {
   }
 }
 
+function convertTweetCreatedAtToTimestamp (createdAt) {
+  return moment(createdAt, 'ddd MMM DD HH:mm:ss ZZ YYYY').valueOf()
+}
+
 async function init () {
   pino.info('Creating Websocket server...')
   await startWebSocketServer()
@@ -84,7 +89,7 @@ function backfillTweets (ws) {
 
     tweets.statuses.forEach((event) => {
       sendEvent(ws, 'tweet', {
-        ts: event.timestamp_ms,
+        ts: convertTweetCreatedAtToTimestamp(event.created_at),
         text: event.text,
         user: {
           screen_name: event.user.screen_name,

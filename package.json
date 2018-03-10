@@ -13,6 +13,7 @@
   "license": "ISC",
   "dependencies": {
     "dotenv": "^5.0.1",
+    "moment": "^2.21.0",
     "pino": "^4.13.0",
     "twitter": "^1.7.1",
     "ws": "^5.0.0"
