@@ -6,6 +6,44 @@ const pino = require('pino')()
 
 const WebSocketServer = WebSocket.Server
 
+const wss = new WebSocketServer({
+  port: process.env.PORT || 1235,
+  host: process.env.HOST
+})
+
+const twitter = new Twitter({
+  consumer_key: process.env.TWITTER_CONSUMER_KEY,
+  consumer_secret: process.env.TWITTER_CONSUMER_SECRET,
+  access_token_key: process.env.TWITTER_ACCESS_TOKEN,
+  access_token_secret: process.env.TWITTER_ACCESS_TOKEN_SECRET
+})
+
+function closeWebsocketServer () {
+  pino.info('Closing Websocket server...')
+  wss.close(function () {
+    process.exit(0)
+  })
+}
+process.on('SIGTERM', closeWebsocketServer)
+process.on('SIGINT', closeWebsocketServer)
+
+function startWebSocketServer (logger, port, host) {
+  return new Promise((resolve, reject) => {
+    wss.on('listening', function () {
+      resolve()
+    })
+  })
+}
+
+function connectTwitterStream () {
+  return new Promise((resolve, reject) => {
+    const stream = twitter.stream('statuses/filter', { track: '#hack24' })
+    stream.on('response', function () {
+      resolve(stream)
+    })
+  })
+}
+
 function broadcastEvent (wss, event, data) {
   const packet = JSON.stringify({ event, data })
   wss.clients.forEach((client) => {
@@ -22,73 +60,76 @@ function sendEvent (ws, event, data) {
   }
 }
 
-function createServer (port, host) {
-  return new Promise((resolve, reject) => {
-    const wss = new WebSocketServer({ port, host })
-
-    wss.on('connection', function connection (ws) {
-      sendEvent(ws, 'hello', { hello: 'world' })
-    })
-
-    wss.on('listening', function () {
-      resolve(wss)
-    })
-  })
-}
-
-function connectTwitterStream () {
-  return new Promise((resolve, reject) => {
-    const client = new Twitter({
-      consumer_key: process.env.TWITTER_CONSUMER_KEY,
-      consumer_secret: process.env.TWITTER_CONSUMER_SECRET,
-      access_token_key: process.env.TWITTER_ACCESS_TOKEN,
-      access_token_secret: process.env.TWITTER_ACCESS_TOKEN_SECRET
-    })
-
-    const stream = client.stream('statuses/filter', { track: 'javascript' })
-
-    stream.on('response', function () {
-      resolve(stream)
-    })
-  })
-}
-
-function setGracefullyClose (wss, logger) {
-  process.on('SIGINT', function () {
-    logger.info('Closing Websocket server...')
-    wss.close(function () {
-      process.exit(0)
-    })
-  })
-}
-
-async function init (logger) {
+async function init () {
   pino.info('Creating Websocket server...')
-  const wss = await createServer(process.env.PORT || 1235, process.env.HOST)
+  await startWebSocketServer()
 
   pino.info('Connecting to Twitter...')
-  const twitter = await connectTwitterStream()
+  const stream = await connectTwitterStream()
 
   pino.info('Ready')
-  return { wss, twitter }
+  return stream
 }
 
-function bind (logger, wss, twitter) {
+function backfillTweets (ws) {
+  twitter.get('search/tweets', {
+    q: '#hack24',
+    result_type: 'recent',
+    count: 5
+  }, (err, tweets, response) => {
+    if (err) {
+      pino.error(err, 'Unable to fetch recent tweets')
+      return
+    }
+
+    tweets.statuses.forEach((event) => {
+      sendEvent(ws, 'tweet', {
+        ts: event.timestamp_ms,
+        text: event.text,
+        user: {
+          screen_name: event.user.screen_name,
+          name: event.user.name,
+          profile_image_url: event.user.profile_image_url
+        }
+      })
+    })
+  })
+}
+
+function backfillNewClients () {
+  wss.on('connection', (ws) => {
+    backfillTweets(ws)
+  })
+}
+
+function bindTwitterStream (stream) {
   const broadcast = (event, data) => broadcastEvent(wss, event, data)
 
-  twitter.on('data', function (event) {
-    broadcast('tweet', { text: event.text })
+  stream.on('data', function (event) {
+    broadcast('tweet', {
+      ts: event.timestamp_ms,
+      text: event.text,
+      user: {
+        screen_name: event.user.screen_name,
+        name: event.user.name,
+        profile_image_url: event.user.profile_image_url
+      }
+    })
   })
 
-  twitter.on('error', function (err) {
-    logger.error(err, 'twitter stream error')
+  stream.on('error', function (err) {
+    pino.error(err, 'twitter stream error')
   })
 }
 
-init(pino).catch((err) => {
+init().catch((err) => {
   pino.error(err, 'Initialisation failed')
   process.exit(1)
-}).then(({ wss, twitter }) => {
-  setGracefullyClose(wss, pino)
-  bind(pino, wss, twitter)
+}).then((stream) => {
+  bindTwitterStream(stream)
+  backfillNewClients()
+})
+
+process.on('unhandledRejection', (reason, p) => {
+  console.log('Unhandled Rejection at: Promise', p, 'reason:', reason)
 })
